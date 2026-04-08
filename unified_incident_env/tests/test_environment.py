@@ -428,6 +428,21 @@ def test_web_step_accepts_raw_action_payload(monkeypatch) -> None:
     assert payload["observation"]["workflow_stage"] == "security_subquest"
 
 
+def test_simple_console_route_and_root_redirect(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_WEB_INTERFACE", "true")
+    client = TestClient(app_module.create_compatible_app())
+
+    root_response = client.get("/", follow_redirects=False)
+    assert root_response.status_code in {302, 307}
+    assert root_response.headers["location"] == "/simple"
+
+    simple_response = client.get("/simple")
+    assert simple_response.status_code == 200
+    assert "Simple Console" in simple_response.text
+    assert "HF Token" in simple_response.text
+    assert "Get state" in simple_response.text
+
+
 def test_web_step_autofills_missing_required_fields(monkeypatch) -> None:
     monkeypatch.setenv("ENABLE_WEB_INTERFACE", "true")
     client = TestClient(app_module.create_compatible_app())
