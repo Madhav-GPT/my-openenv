@@ -151,6 +151,56 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .summary-panel {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #081124;
+    }
+    .summary-title {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+    .summary-meta {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 260px 1fr 64px;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0;
+    }
+    .bar-label {
+      font-size: 12px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bar-track {
+      height: 12px;
+      border-radius: 999px;
+      background: #1a2742;
+      overflow: hidden;
+      border: 1px solid #2b3b57;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #34d399 0%, #60a5fa 100%);
+    }
+    .bar-fill.steps {
+      background: linear-gradient(90deg, #f59e0b 0%, #fb7185 100%);
+    }
+    .bar-value {
+      text-align: right;
+      font-size: 12px;
+      color: var(--muted);
+    }
     .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
   </style>
 </head>
@@ -168,7 +218,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         <input id="hfToken" type="password" placeholder="hf_xxx..." />
       </div>
       <div>
-        <label for="modelLabel">Model label for logs</label>
+        <label for="modelLabel">MODEL_NAME (required for Start Session)</label>
         <input id="modelLabel" type="text" value="Qwen/Qwen2.5-72B-Instruct:novita" />
       </div>
       <div>
@@ -197,18 +247,30 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
     </div>
 
     <pre id="terminal"></pre>
+    <div id="summaryPanel" class="summary-panel" style="display:none;">
+      <h2 class="summary-title">Performance Summary</h2>
+      <p id="summaryMeta" class="summary-meta"></p>
+      <div id="scoreBars"></div>
+      <div id="stepBars" style="margin-top:12px;"></div>
+    </div>
     <div class="hint">
-      Start Session runs the selected scenario(s) end-to-end and emits START/STEP/END logs.
+      Start Session runs selected scenario(s) end-to-end against live `/web/reset` + `/web/step` and emits START/STEP/END logs.
     </div>
   </div>
 
   <script>
     const terminal = document.getElementById("terminal");
+    const summaryPanel = document.getElementById("summaryPanel");
+    const summaryMeta = document.getElementById("summaryMeta");
+    const scoreBars = document.getElementById("scoreBars");
+    const stepBars = document.getElementById("stepBars");
     let lastObservation = null;
     let lastDone = false;
     let stepCounter = 0;
     let rewardHistory = [];
     let autoRunning = false;
+    let actionHistory = [];
+    let runResults = [];
 
     function ts() {
       return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -236,7 +298,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
     }
 
     function readModelLabel() {
-      return document.getElementById("modelLabel").value.trim() || "browser-auto";
+      return document.getElementById("modelLabel").value.trim();
     }
 
     function actionToLog(action) {
@@ -260,6 +322,14 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         return ["database_sqli_outage"];
       }
       return [selection];
+    }
+
+    function formatBool(value) {
+      return value ? "true" : "false";
+    }
+
+    function rewardSum(values) {
+      return values.reduce((total, value) => total + Number(value || 0), 0);
     }
 
     async function requestJson(path, payload, method = "POST") {
@@ -310,15 +380,45 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       return rawAction;
     }
 
-    function pickAutoAction(observation) {
+    function pickAutoAction(observation, scenarioId) {
       if (!observation || typeof observation !== "object") {
         return null;
       }
+      const stage = observation.workflow_stage || "";
+      const allowed = Array.isArray(observation.allowed_actions) ? observation.allowed_actions : [];
+      const repeatedAction = actionHistory.length >= 2
+        && actionHistory[actionHistory.length - 1] === actionHistory[actionHistory.length - 2]
+        ? actionHistory[actionHistory.length - 1]
+        : null;
+      const repeatingError = typeof observation.why_failed === "string"
+        && observation.why_failed.toLowerCase().includes("same ineffective action");
+
+      if (scenarioId === "cache_abuse_broken_access_control" && stage === "root_cause_analysis") {
+        if (allowed.includes("query_dependencies")) {
+          return { action_type: "query_dependencies", service: "api-gateway" };
+        }
+        if (allowed.includes("query_logs")) {
+          return { action_type: "query_logs", service: "cache" };
+        }
+      }
+
+      if (repeatingError && repeatedAction && allowed.length > 1) {
+        const alternative = allowed.find((actionType) => actionType !== repeatedAction);
+        if (alternative) {
+          if (alternative === "query_dependencies") {
+            return { action_type: "query_dependencies", service: "api-gateway" };
+          }
+          if (alternative === "query_logs") {
+            return { action_type: "query_logs", service: scenarioId === "worker_bad_deploy_command_injection" ? "worker" : "database" };
+          }
+          return { action_type: alternative };
+        }
+      }
+
       const validExample = observation.valid_action_example;
       if (validExample && typeof validExample === "object" && validExample.action_type) {
         return toStepAction(validExample);
       }
-      const allowed = Array.isArray(observation.allowed_actions) ? observation.allowed_actions : [];
       if (allowed.length === 0) {
         return null;
       }
@@ -350,6 +450,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         lastDone = done;
         stepCounter = 0;
         rewardHistory = [];
+        actionHistory = [];
         return result.data;
       } catch (error) {
         append("[ERROR] reset exception=" + String(error));
@@ -380,6 +481,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         const errorText = result.data?.observation?.why_failed || "null";
         stepCounter += 1;
         rewardHistory.push(reward);
+        actionHistory.push(stepAction.action_type);
         lastObservation = observation;
         lastDone = done;
         append("[STEP] step=" + stepCounter + " action=" + actionToLog(stepAction) + " reward=" + reward.toFixed(2) + " done=" + String(done).toLowerCase() + " error=" + errorText);
@@ -409,11 +511,11 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       await executeStep(action, true);
     }
 
-    async function runAutoSession() {
+    async function runAutoSession(scenarioId) {
       autoRunning = true;
       const maxSteps = Math.max(1, (lastObservation?.max_ticks || 8) + 6);
       while (!lastDone && stepCounter < maxSteps) {
-        const autoAction = pickAutoAction(lastObservation);
+        const autoAction = pickAutoAction(lastObservation, scenarioId);
         if (!autoAction) {
           append("[ERROR] no valid next action available");
           break;
@@ -425,10 +527,69 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         }
       }
       const finalScore = Number(lastObservation?.final_score ?? 0);
-      const success = lastDone && finalScore > 0;
+      const success = Boolean(
+        lastDone
+        && lastObservation?.incident_resolved
+        && lastObservation?.security_subquest_status === "completed"
+      );
       const rewardsStr = rewardHistory.map((r) => Number(r).toFixed(2)).join(",");
-      append("[END] success=" + String(success).toLowerCase() + " steps=" + stepCounter + " score=" + finalScore.toFixed(2) + " rewards=" + rewardsStr);
+      append("[END] success=" + formatBool(success) + " steps=" + stepCounter + " score=" + finalScore.toFixed(2) + " rewards=" + rewardsStr);
       autoRunning = false;
+      return {
+        success,
+        steps: stepCounter,
+        score: finalScore,
+        rewards: rewardHistory.slice(),
+      };
+    }
+
+    function renderBarRows(container, rows, maxValue, fillClass = "") {
+      const safeMax = maxValue > 0 ? maxValue : 1;
+      container.innerHTML = rows.map((row) => {
+        const width = Math.max(0, Math.min(100, (row.value / safeMax) * 100));
+        const fillClassName = fillClass ? "bar-fill " + fillClass : "bar-fill";
+        return (
+          '<div class="bar-row">' +
+            '<div class="bar-label">' + row.label + "</div>" +
+            '<div class="bar-track"><div class="' + fillClassName + '" style="width:' + width.toFixed(1) + '%"></div></div>' +
+            '<div class="bar-value">' + row.text + "</div>" +
+          "</div>"
+        );
+      }).join("");
+    }
+
+    function renderSummary(results, modelName) {
+      if (!Array.isArray(results) || results.length === 0) {
+        summaryPanel.style.display = "none";
+        return;
+      }
+      summaryPanel.style.display = "block";
+      const meanScore = results.reduce((total, item) => total + item.score, 0) / results.length;
+      const successCount = results.filter((item) => item.success).length;
+      summaryMeta.textContent = "Model: " + modelName + " | Mean score: " + meanScore.toFixed(2) + " | Success: " + successCount + "/" + results.length;
+
+      renderBarRows(
+        scoreBars,
+        results.map((item) => ({
+          label: item.scenario + " (score)",
+          value: item.score,
+          text: item.score.toFixed(2),
+        })),
+        1.0,
+        ""
+      );
+
+      const maxSteps = Math.max(...results.map((item) => item.steps), 1);
+      renderBarRows(
+        stepBars,
+        results.map((item) => ({
+          label: item.scenario + " (steps)",
+          value: item.steps,
+          text: String(item.steps),
+        })),
+        maxSteps,
+        "steps"
+      );
     }
 
     async function startSession() {
@@ -437,19 +598,43 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
         return;
       }
 
+      const token = readToken();
+      const modelLabel = readModelLabel();
+      if (!token || !modelLabel) {
+        append("[ERROR] Start Session requires both HF token and MODEL_NAME. Fill both fields first.");
+        return;
+      }
+
       const selected = readScenario();
       const scenarioIds = benchmarkScenarios(selected);
-      const modelLabel = readModelLabel();
+      runResults = [];
+      summaryPanel.style.display = "none";
+      append("[RUN] live_env=true endpoints=/web/reset,/web/step,/web/state");
 
       for (const scenarioId of scenarioIds) {
         append("[START] task=" + scenarioId + " env=unified-incident-env model=" + modelLabel);
         const resetPayload = await doReset(true, scenarioId, false);
         if (!resetPayload) {
           append("[END] success=false steps=0 score=0.00 rewards=");
+          runResults.push({
+            scenario: scenarioId,
+            success: false,
+            steps: 0,
+            score: 0,
+            reward_sum: 0,
+          });
           continue;
         }
-        await runAutoSession();
+        const outcome = await runAutoSession(scenarioId);
+        runResults.push({
+          scenario: scenarioId,
+          success: Boolean(outcome?.success),
+          steps: Number(outcome?.steps || 0),
+          score: Number(outcome?.score || 0),
+          reward_sum: rewardSum(outcome?.rewards || []),
+        });
       }
+      renderSummary(runResults, modelLabel);
     }
 
     async function doState() {
@@ -483,7 +668,7 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       terminal.textContent = "";
     }
 
-    append("Simple console ready. Token is optional and never saved.");
+    append("Simple console ready. Provide HF token + MODEL_NAME, then click Start Session.");
   </script>
 </body>
 </html>
