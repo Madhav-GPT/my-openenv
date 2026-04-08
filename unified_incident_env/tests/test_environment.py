@@ -3,7 +3,9 @@
 from __future__ import annotations
 from typing import get_args
 
+from fastapi.testclient import TestClient
 from unified_incident_env.models import ActionType, PostmortemPayload, UnifiedIncidentAction
+from unified_incident_env.server import app as app_module
 from unified_incident_env.server.app import (
     baseline as baseline_endpoint,
     grader as grader_endpoint,
@@ -408,3 +410,19 @@ def test_http_routes() -> None:
     health_payload = health_endpoint()
     assert health_payload["status"] == "ok"
     assert health_payload["environment"] == "unified_incident_env"
+
+
+def test_web_step_accepts_raw_action_payload(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_WEB_INTERFACE", "true")
+    client = TestClient(app_module.create_compatible_app())
+    reset_response = client.post("/web/reset", json={})
+    assert reset_response.status_code == 200
+
+    step_response = client.post(
+        "/web/step",
+        json={"action_type": "query_logs", "service": "database"},
+    )
+    assert step_response.status_code == 200
+    payload = step_response.json()
+    assert payload["reward"] == 0.05
+    assert payload["observation"]["workflow_stage"] == "security_subquest"

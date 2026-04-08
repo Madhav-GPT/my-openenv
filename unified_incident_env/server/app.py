@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import os
+from typing import Any
 
+import gradio as gr
+from fastapi import Body
 from fastapi import HTTPException
-from openenv.core.env_server import create_app
+from fastapi.responses import RedirectResponse
+from fastapi import WebSocket, WebSocketDisconnect
+from openenv.core.env_server.http_server import create_fastapi_app
+from openenv.core.env_server.web_interface import (
+    OPENENV_GRADIO_CSS,
+    OPENENV_GRADIO_THEME,
+    WebInterfaceManager,
+    _extract_action_fields,
+    _is_chat_env,
+    build_gradio_app,
+    get_gradio_display_title,
+    get_quick_start_markdown,
+    load_environment_metadata,
+)
 
 from ..models import (
     BaselineCatalog,
@@ -27,13 +44,106 @@ from .environment import UnifiedIncidentEnvironment
 
 _BOOTSTRAP_ENV = UnifiedIncidentEnvironment()
 set_runtime_progress(_BOOTSTRAP_ENV.state.model_dump())
-app = create_app(
-    lambda: UnifiedIncidentEnvironment(),
-    UnifiedIncidentAction,
-    UnifiedIncidentObservation,
-    env_name="unified_incident_env",
-    max_concurrent_envs=1,
-)
+
+
+def create_compatible_app():
+    env_factory = lambda: UnifiedIncidentEnvironment()
+    enable_web = os.getenv("ENABLE_WEB_INTERFACE", "false").lower() in ("true", "1", "yes")
+    if not enable_web:
+        return create_fastapi_app(
+            env_factory,
+            UnifiedIncidentAction,
+            UnifiedIncidentObservation,
+            max_concurrent_envs=1,
+        )
+
+    app = create_fastapi_app(
+        env_factory,
+        UnifiedIncidentAction,
+        UnifiedIncidentObservation,
+        max_concurrent_envs=1,
+    )
+    metadata = load_environment_metadata(env_factory, "unified_incident_env")
+    web_manager = WebInterfaceManager(
+        env_factory,
+        UnifiedIncidentAction,
+        UnifiedIncidentObservation,
+        metadata,
+    )
+
+    @app.get("/", include_in_schema=False)
+    async def web_root():
+        return RedirectResponse(url="/web/")
+
+    @app.get("/web", include_in_schema=False)
+    async def web_root_no_slash():
+        return RedirectResponse(url="/web/")
+
+    @app.get("/web/metadata")
+    async def web_metadata():
+        return web_manager.metadata.model_dump()
+
+    @app.websocket("/ws/ui")
+    async def websocket_ui_endpoint(websocket: WebSocket):
+        await web_manager.connect_websocket(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            await web_manager.disconnect_websocket(websocket)
+
+    @app.post("/web/reset")
+    async def web_reset(request: dict[str, Any] | None = Body(default=None)):
+        return await web_manager.reset_environment(request)
+
+    @app.post("/web/step")
+    async def web_step(request: dict[str, Any]):
+        if "message" in request:
+            message = request["message"]
+            if hasattr(web_manager.env, "message_to_action"):
+                action = web_manager.env.message_to_action(message)
+                if hasattr(action, "tokens"):
+                    action_data = {"tokens": action.tokens.tolist()}
+                else:
+                    action_data = action.model_dump(exclude={"metadata"})
+            else:
+                action_data = {"message": message}
+        elif isinstance(request.get("action"), dict):
+            action_data = request["action"]
+        else:
+            action_data = request
+
+        return await web_manager.step_environment(action_data)
+
+    @app.get("/web/state")
+    async def web_state():
+        return web_manager.get_state()
+
+    action_fields = _extract_action_fields(UnifiedIncidentAction)
+    is_chat_env = _is_chat_env(UnifiedIncidentAction)
+    quick_start_md = get_quick_start_markdown(
+        metadata,
+        UnifiedIncidentAction,
+        UnifiedIncidentObservation,
+    )
+    gradio_blocks = build_gradio_app(
+        web_manager,
+        action_fields,
+        metadata,
+        is_chat_env,
+        title=metadata.name,
+        quick_start_md=quick_start_md,
+    )
+    return gr.mount_gradio_app(
+        app,
+        gradio_blocks,
+        path="/web",
+        theme=OPENENV_GRADIO_THEME,
+        css=OPENENV_GRADIO_CSS,
+    )
+
+
+app = create_compatible_app()
 app.router.routes = [
     route
     for route in app.router.routes
