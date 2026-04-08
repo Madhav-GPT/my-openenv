@@ -6,6 +6,9 @@ from typing import Any
 
 from ..models import GraderCheck, GraderReport, PostmortemPayload
 
+MIN_PUBLIC_SCORE = 0.01
+MAX_PUBLIC_SCORE = 0.99
+
 
 def _contains_all(text: str, phrases: list[str]) -> bool:
     lowered = text.lower()
@@ -15,6 +18,10 @@ def _contains_all(text: str, phrases: list[str]) -> bool:
 def _contains_any(text: str, phrases: list[str]) -> bool:
     lowered = text.lower()
     return any(phrase.lower() in lowered for phrase in phrases)
+
+
+def _strict_public_score(score: float) -> float:
+    return round(min(MAX_PUBLIC_SCORE, max(MIN_PUBLIC_SCORE, score)), 4)
 
 
 class DeterministicPostmortemScorer:
@@ -110,6 +117,7 @@ class UnifiedIncidentGrader:
         )
         if state.get("security_subquest_status") != "completed":
             final_score = min(final_score, 0.5)
+        final_score = _strict_public_score(final_score)
 
         return {
             "infrastructure_score": round(infrastructure_score, 4),

@@ -154,6 +154,7 @@ def test_happy_path_easy() -> None:
     assert obs.incident_resolved is True
     assert obs.security_subquest_status == "completed"
     assert obs.final_score >= 0.8
+    assert obs.final_score < 1.0
 
 
 def test_happy_path_medium() -> None:
@@ -169,6 +170,7 @@ def test_happy_path_medium() -> None:
     assert obs.incident_resolved is True
     assert obs.security_subquest_status == "completed"
     assert obs.final_score >= 0.8
+    assert obs.final_score < 1.0
 
 
 def test_happy_path_hard() -> None:
@@ -184,6 +186,7 @@ def test_happy_path_hard() -> None:
     assert obs.incident_resolved is True
     assert obs.security_subquest_status == "completed"
     assert obs.final_score >= 0.8
+    assert obs.final_score < 1.0
 
 
 def test_trap_path_easy() -> None:
