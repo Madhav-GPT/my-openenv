@@ -426,3 +426,20 @@ def test_web_step_accepts_raw_action_payload(monkeypatch) -> None:
     payload = step_response.json()
     assert payload["reward"] == 0.05
     assert payload["observation"]["workflow_stage"] == "security_subquest"
+
+
+def test_web_step_autofills_missing_required_fields(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_WEB_INTERFACE", "true")
+    client = TestClient(app_module.create_compatible_app())
+    reset_response = client.post("/web/reset", json={})
+    assert reset_response.status_code == 200
+
+    step_response = client.post(
+        "/web/step",
+        json={"action_type": "query_logs"},
+    )
+    assert step_response.status_code == 200
+    payload = step_response.json()
+    assert payload["reward"] == 0.05
+    assert payload["observation"]["workflow_stage"] == "security_subquest"
+    assert "query_logs returned data for database" in payload["observation"]["last_action_result"]

@@ -98,6 +98,31 @@ def create_compatible_app():
 
     @app.post("/web/step")
     async def web_step(request: dict[str, Any]):
+        def _autofill_action_fields(action_data: dict[str, Any]) -> dict[str, Any]:
+            action_type = action_data.get("action_type")
+            if not isinstance(action_type, str):
+                return action_data
+
+            current_observation = web_manager.episode_state.current_observation or {}
+            required_fields_by_action = current_observation.get("required_fields_by_action")
+            if not isinstance(required_fields_by_action, dict):
+                return action_data
+            required_fields = required_fields_by_action.get(action_type)
+            if not isinstance(required_fields, list):
+                return action_data
+
+            valid_action_example = current_observation.get("valid_action_example")
+            if not isinstance(valid_action_example, dict):
+                return action_data
+            if valid_action_example.get("action_type") != action_type:
+                return action_data
+
+            filled_action = dict(action_data)
+            for field in required_fields:
+                if filled_action.get(field) in (None, "") and valid_action_example.get(field) not in (None, ""):
+                    filled_action[field] = valid_action_example[field]
+            return filled_action
+
         if "message" in request:
             message = request["message"]
             if hasattr(web_manager.env, "message_to_action"):
@@ -112,6 +137,9 @@ def create_compatible_app():
             action_data = request["action"]
         else:
             action_data = request
+
+        if isinstance(action_data, dict):
+            action_data = _autofill_action_fields(action_data)
 
         return await web_manager.step_environment(action_data)
 
