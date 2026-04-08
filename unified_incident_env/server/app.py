@@ -266,14 +266,16 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
       return { ok: response.ok, status: response.status, data: json };
     }
 
-    function summarizeObservation(observation) {
+    function summarizeObservation(observation, doneOverride = null) {
       if (!observation || typeof observation !== "object") {
         return "observation=none";
       }
       const tick = observation.tick_count;
       const stage = observation.workflow_stage;
       const score = observation.final_score;
-      const done = observation.done;
+      const done = (typeof doneOverride === "boolean")
+        ? doneOverride
+        : (typeof observation.done === "boolean" ? observation.done : false);
       return "tick=" + tick + " stage=" + stage + " final_score=" + score + " done=" + done;
     }
 
@@ -297,7 +299,9 @@ _SIMPLE_CONSOLE_HTML = """<!doctype html>
           append("[ERROR] reset failed status=" + result.status + " body=" + safeJson(result.data));
           return;
         }
-        append("[RESET] status=200 " + summarizeObservation(result.data?.observation));
+        const reward = typeof result.data?.reward === "number" ? result.data.reward : 0;
+        const done = typeof result.data?.done === "boolean" ? result.data.done : false;
+        append("[RESET] status=200 reward=" + reward + " done=" + done + " " + summarizeObservation(result.data?.observation, done));
       } catch (error) {
         append("[ERROR] reset exception=" + String(error));
       }
